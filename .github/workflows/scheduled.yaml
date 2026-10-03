@@ -7,7 +7,8 @@ on:
 permissions:
   contents: write
 concurrency:
-  group: ${{ github.workflow }} @ ${{ github.head_ref || github.ref }}
+  group: ${{ github.workflow }} @ ${{ github.head_ref || (github.event_name == 
+    'schedule' && 'refs/heads/master' || github.ref) }}
   cancel-in-progress: ${{ github.event_name != 'schedule' && (true) }}
 jobs:
   services-availability:
@@ -23,6 +24,8 @@ jobs:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd   # v6.0.2
       with:
         fetch-depth: 0
+        ref: ${{ github.event_name == 'schedule' && 
+          'cffa83ba552f1ef6a0a05851c3aa07b3811d7e58' || github.sha }}
     - name: Check for Defunct Services 📉
       uses: ./.github/actions/services-validator
       with:
@@ -33,6 +36,13 @@ jobs:
         runServiceChecks: true
         createPullRequest: true
 
+    env:
+      ALPHA_BRIDGE_SOURCE_SHA: ${{ github.event_name == 'schedule' && 
+        'cffa83ba552f1ef6a0a05851c3aa07b3811d7e58' || github.sha }}
+      ALPHA_BRIDGE_SOURCE_REF: ${{ github.event_name == 'schedule' && 
+        'refs/heads/master' || github.ref }}
+      ALPHA_BRIDGE_SOURCE_REF_NAME: ${{ github.event_name == 'schedule' && 
+        'master' || github.ref_name }}
     needs:
     - alpha_bridge_inputs
   cache-cleanup:
@@ -93,6 +103,13 @@ jobs:
             --jq '.actions_caches.[] | select(.ref|test("refs/heads/master")|not) | select(.key|test(".*-ccache-*")) | {id, key, ref} | join(";")')"
         echo '::endgroup::'
 
+    env:
+      ALPHA_BRIDGE_SOURCE_SHA: ${{ github.event_name == 'schedule' && 
+        'cffa83ba552f1ef6a0a05851c3aa07b3811d7e58' || github.sha }}
+      ALPHA_BRIDGE_SOURCE_REF: ${{ github.event_name == 'schedule' && 
+        'refs/heads/master' || github.ref }}
+      ALPHA_BRIDGE_SOURCE_REF_NAME: ${{ github.event_name == 'schedule' && 
+        'master' || github.ref_name }}
     needs:
     - alpha_bridge_inputs
     if: ${{ (success()) && needs.alpha_bridge_inputs.outputs.changed == 'true' 
@@ -121,8 +138,9 @@ jobs:
       }}
   upload-language-files:
     name: Upload Language Files 🌐
-    if: ${{ (github.repository_owner == 'obsproject' && github.ref_name == 
-      'master') && needs.alpha_bridge_inputs.outputs.changed == 'true' }}
+    if: ${{ (github.repository_owner == 'obsproject' && (github.event_name == 
+      'schedule' && 'master' || github.ref_name) == 'master') && 
+      needs.alpha_bridge_inputs.outputs.changed == 'true' }}
     runs-on: ubuntu-26.04
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd   # v6.0.2
@@ -130,6 +148,8 @@ jobs:
         submodules: recursive
         fetch-depth: 0
 
+        ref: ${{ github.event_name == 'schedule' && 
+          'cffa83ba552f1ef6a0a05851c3aa07b3811d7e58' || github.sha }}
     - name: Check Nightly Runs ☑️
       id: nightly-checks
       env:
@@ -151,7 +171,7 @@ jobs:
 
         last_nightly=$(gh run list --workflow scheduled.yaml --limit 2 --json headSha --jq '.[1].headSha')
 
-        if [[ "${GITHUB_SHA}" == "${last_nightly}" ]]; then
+        if [[ "${ALPHA_BRIDGE_SOURCE_SHA}" == "${last_nightly}" ]]; then
           echo "passed=false" >> $GITHUB_OUTPUT
         else
           echo "passed=true" >> $GITHUB_OUTPUT
@@ -175,6 +195,13 @@ jobs:
         CROWDIN_PAT: ${{ secrets.CROWDIN_SYNC_CROWDIN_PAT }}
         GITHUB_EVENT_BEFORE: ${{ steps.nightly-checks.outputs.lastNightly }}
 
+    env:
+      ALPHA_BRIDGE_SOURCE_SHA: ${{ github.event_name == 'schedule' && 
+        'cffa83ba552f1ef6a0a05851c3aa07b3811d7e58' || github.sha }}
+      ALPHA_BRIDGE_SOURCE_REF: ${{ github.event_name == 'schedule' && 
+        'refs/heads/master' || github.ref }}
+      ALPHA_BRIDGE_SOURCE_REF_NAME: ${{ github.event_name == 'schedule' && 
+        'master' || github.ref_name }}
     needs:
     - alpha_bridge_inputs
   steam-upload:
@@ -191,6 +218,9 @@ jobs:
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd   # v6.0.2
 
+      with:
+        ref: ${{ github.event_name == 'schedule' && 
+          'cffa83ba552f1ef6a0a05851c3aa07b3811d7e58' || github.sha }}
     - name: Check Nightly Runs ☑️
       id: checks
       env:
@@ -212,7 +242,7 @@ jobs:
 
         local last_nightly=$(gh run list --workflow scheduled.yaml --limit 2 --json headSha --jq '.[1].headSha')
 
-        if [[ "${GITHUB_SHA}" == "${last_nightly}" ]] {
+        if [[ "${ALPHA_BRIDGE_SOURCE_SHA}" == "${last_nightly}" ]] {
           print "passed=false" >> $GITHUB_OUTPUT
         } else {
           print "passed=true" >> $GITHUB_OUTPUT
@@ -226,6 +256,13 @@ jobs:
         steamPassword: ${{ secrets.STEAM_PASSWORD }}
         workflowSecret: ${{ secrets.GITHUB_TOKEN }}
         preview: ${{ github.repository_owner != 'obsproject' }}
+    env:
+      ALPHA_BRIDGE_SOURCE_SHA: ${{ github.event_name == 'schedule' && 
+        'cffa83ba552f1ef6a0a05851c3aa07b3811d7e58' || github.sha }}
+      ALPHA_BRIDGE_SOURCE_REF: ${{ github.event_name == 'schedule' && 
+        'refs/heads/master' || github.ref }}
+      ALPHA_BRIDGE_SOURCE_REF_NAME: ${{ github.event_name == 'schedule' && 
+        'master' || github.ref_name }}
   alpha_bridge_inputs:
     name: AlphaBridge input check
     runs-on: ubuntu-latest
@@ -247,7 +284,7 @@ jobs:
         AB_RUN_ID: ${{ github.run_id }}
         AB_HEAD_SHA: cffa83ba552f1ef6a0a05851c3aa07b3811d7e58
         AB_WORKFLOW_DIGEST: 
-          de1d4a1cd2d50eef662636b09b146b78ea077abc288d492e39dd326057a4bec2
+          603f6f933a6f1988429027e86fafdb89b7db4ea2db265fb6c4f14361363a37ee
         AB_EVENT: ${{ github.event_name }}
         AB_SCHEDULE: ${{ github.event.schedule || '' }}
         AB_VARIABLES: ${{ toJSON(vars) }}
