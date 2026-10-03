@@ -371,11 +371,14 @@ static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate
 	if (audio_buffering_maxed(audio))
 		return;
 
+	offset = ts->start - min_ts;
+	frames = ns_to_audio_frames(sample_rate, offset);
+	if (!frames)
+		return;
+
 	if (!audio->buffering_wait_ticks)
 		audio->buffered_ts = ts->start;
 
-	offset = ts->start - min_ts;
-	frames = ns_to_audio_frames(sample_rate, offset);
 	ticks = (int)((frames + AUDIO_OUTPUT_FRAMES - 1) / AUDIO_OUTPUT_FRAMES);
 
 	audio->total_buffering_ticks += ticks;
