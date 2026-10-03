@@ -3,203 +3,297 @@ run-name: Scheduled Repository Actions ⏰
 on:
   workflow_dispatch:
   schedule:
-    - cron: 17 0 * * *
+  - cron: 17 0 * * *
 permissions:
   contents: write
 concurrency:
-  group: '${{ github.workflow }} @ ${{ github.head_ref || github.ref }}'
-  cancel-in-progress: true
+  group: ${{ github.workflow }} @ ${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' && (true) }}
 jobs:
   services-availability:
     name: Check Service Availability 🛜
-    if: github.repository_owner == 'obsproject'
+    if: ${{ (github.repository_owner == 'obsproject') && 
+      needs.alpha_bridge_inputs.outputs.changed == 'true' }}
     runs-on: macos-26
     permissions:
       checks: write
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-      - name: Check for Defunct Services 📉
-        uses: ./.github/actions/services-validator
-        with:
-          repositorySecret: ${{ secrets.GITHUB_TOKEN }}
-          checkApiSecret: ${{ secrets.CHECK_SERVERS_API_KEY }}
-          checkApiServers: ${{ secrets.CHECK_SERVERS_LIST }}
-          runSchemaChecks: false
-          runServiceChecks: true
-          createPullRequest: true
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd   # v6.0.2
+      with:
+        fetch-depth: 0
+    - name: Check for Defunct Services 📉
+      uses: ./.github/actions/services-validator
+      with:
+        repositorySecret: ${{ secrets.GITHUB_TOKEN }}
+        checkApiSecret: ${{ secrets.CHECK_SERVERS_API_KEY }}
+        checkApiServers: ${{ secrets.CHECK_SERVERS_LIST }}
+        runSchemaChecks: false
+        runServiceChecks: true
+        createPullRequest: true
 
+    needs:
+    - alpha_bridge_inputs
   cache-cleanup:
     name: Cache Cleanup 🧹
     runs-on: ubuntu-26.04
     permissions:
       actions: write
     steps:
-      - name: Remove Stale Ccache Caches
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          : Remove Stale Ccache Caches
+    - name: Remove Stale Ccache Caches
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        : Remove Stale Ccache Caches
 
-          # The jq expressions below use multiple 'select' calls to filter
-          # each item in the array with the 'actions_caches' key.
-          # First it only selects objects whose 'ref' element has the value
-          # 'refs/heads/master', of those objects only those whose 'key'
-          # value matches the specified expression, before finally only
-          # selecting the 'id' and 'key' elements for a new object.
-          # The final 'join' command combines both elements with a semicolon
-          # into a raw string which can then be parsed directly.
+        # The jq expressions below use multiple 'select' calls to filter
+        # each item in the array with the 'actions_caches' key.
+        # First it only selects objects whose 'ref' element has the value
+        # 'refs/heads/master', of those objects only those whose 'key'
+        # value matches the specified expression, before finally only
+        # selecting the 'id' and 'key' elements for a new object.
+        # The final 'join' command combines both elements with a semicolon
+        # into a raw string which can then be parsed directly.
 
-          echo '::group::Processing master branch cache entries'
-          while IFS=";" read -r cache_id cache_name; do
-            if [[ "${cache_name}" ]]; then
-              result=true
-              gh api -X DELETE repos/${GITHUB_REPOSITORY}/actions/caches?key=${cache_name} --jq '.total_count' &> /dev/null || result=false
+        echo '::group::Processing master branch cache entries'
+        while IFS=";" read -r cache_id cache_name; do
+          if [[ "${cache_name}" ]]; then
+            result=true
+            gh api -X DELETE repos/${GITHUB_REPOSITORY}/actions/caches?key=${cache_name} --jq '.total_count' &> /dev/null || result=false
 
-              if ${result}; then
-                echo "Deleted cache entry ${cache_name}"
-              else
-                echo "::warning::Unable to delete cache entry ${cache_name}"
-              fi
+            if ${result}; then
+              echo "Deleted cache entry ${cache_name}"
+            else
+              echo "::warning::Unable to delete cache entry ${cache_name}"
             fi
-          done <<< \
+          fi
+        done <<< \
+        "$(gh api repos/${GITHUB_REPOSITORY}/actions/caches \
+          --jq '.actions_caches.[] | select(.ref|test("refs/heads/master")) | select(.key|test(".*-(ccache|xcode)-*")) | {id, key} | join(";")')"
+        echo '::endgroup::'
+
+
+        echo '::group::Processing pull request cache entries'
+        while IFS=";" read -r cache_id cache_name cache_ref; do
+          if [[ "${cache_name}" ]]; then
+            result=true
+            gh api -X DELETE repos/${GITHUB_REPOSITORY}/actions/caches?key=${cache_name} --jq '.total_count' &> /dev/null || result=false
+
+            pr_number=$(echo ${cache_ref} | cut -d '/' -f 3)
+
+            if ${result}; then
+              echo "Deleted PR #${pr_number} cache entry ${cache_name}"
+            else
+              echo "::warning::Unable to delete PR #${pr_number} cache entry ${cache_name}"
+            fi
+          fi
+        done <<< \
           "$(gh api repos/${GITHUB_REPOSITORY}/actions/caches \
-            --jq '.actions_caches.[] | select(.ref|test("refs/heads/master")) | select(.key|test(".*-(ccache|xcode)-*")) | {id, key} | join(";")')"
-          echo '::endgroup::'
+            --jq '.actions_caches.[] | select(.ref|test("refs/heads/master")|not) | select(.key|test(".*-ccache-*")) | {id, key, ref} | join(";")')"
+        echo '::endgroup::'
 
-
-          echo '::group::Processing pull request cache entries'
-          while IFS=";" read -r cache_id cache_name cache_ref; do
-            if [[ "${cache_name}" ]]; then
-              result=true
-              gh api -X DELETE repos/${GITHUB_REPOSITORY}/actions/caches?key=${cache_name} --jq '.total_count' &> /dev/null || result=false
-
-              pr_number=$(echo ${cache_ref} | cut -d '/' -f 3)
-
-              if ${result}; then
-                echo "Deleted PR #${pr_number} cache entry ${cache_name}"
-              else
-                echo "::warning::Unable to delete PR #${pr_number} cache entry ${cache_name}"
-              fi
-            fi
-          done <<< \
-            "$(gh api repos/${GITHUB_REPOSITORY}/actions/caches \
-              --jq '.actions_caches.[] | select(.ref|test("refs/heads/master")|not) | select(.key|test(".*-ccache-*")) | {id, key, ref} | join(";")')"
-          echo '::endgroup::'
-
+    needs:
+    - alpha_bridge_inputs
+    if: ${{ (success()) && needs.alpha_bridge_inputs.outputs.changed == 'true' 
+      }}
   build-project:
     name: Build 🧱
     uses: ./.github/workflows/build-project.yaml
-    needs: cache-cleanup
+    needs:
+    - cache-cleanup
+    - alpha_bridge_inputs
     secrets: inherit
 
+    if: ${{ (success()) && needs.alpha_bridge_inputs.outputs.changed == 'true' 
+      }}
   analyze-project:
     name: Analyze 🔬
     uses: ./.github/workflows/analyze-project.yaml
-    needs: cache-cleanup
+    needs:
+    - cache-cleanup
+    - alpha_bridge_inputs
     secrets: inherit
     permissions:
       security-events: write
 
+    if: ${{ (success()) && needs.alpha_bridge_inputs.outputs.changed == 'true' 
+      }}
   upload-language-files:
     name: Upload Language Files 🌐
-    if: github.repository_owner == 'obsproject' && github.ref_name == 'master'
+    if: ${{ (github.repository_owner == 'obsproject' && github.ref_name == 
+      'master') && needs.alpha_bridge_inputs.outputs.changed == 'true' }}
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          submodules: recursive
-          fetch-depth: 0
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd   # v6.0.2
+      with:
+        submodules: recursive
+        fetch-depth: 0
 
-      - name: Check Nightly Runs ☑️
-        id: nightly-checks
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          : Check Nightly Runs ☑️
-          if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
+    - name: Check Nightly Runs ☑️
+      id: nightly-checks
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        : Check Nightly Runs ☑️
+        if [[ "${RUNNER_DEBUG}" ]]; then set -x; fi
 
-          # This 'gh' command retrieves the last 2 runs of the workflow defined
-          # by 'scheduled.yaml' and retrieves just the 'headSha' value of the
-          # JSON response payload.
-          #
-          # As this job runs in context of the same workflow, the first element
-          # of the workflow list will be the currently active run.
-          #
-          # The jq expression then selects the 'headSha' element of the second
-          # element in the array, which is the SHA-1 hash of the commit used
-          # for the immediately prior run of this workflow.
+        # This 'gh' command retrieves the last 2 runs of the workflow defined
+        # by 'scheduled.yaml' and retrieves just the 'headSha' value of the
+        # JSON response payload.
+        #
+        # As this job runs in context of the same workflow, the first element
+        # of the workflow list will be the currently active run.
+        #
+        # The jq expression then selects the 'headSha' element of the second
+        # element in the array, which is the SHA-1 hash of the commit used
+        # for the immediately prior run of this workflow.
 
-          last_nightly=$(gh run list --workflow scheduled.yaml --limit 2 --json headSha --jq '.[1].headSha')
+        last_nightly=$(gh run list --workflow scheduled.yaml --limit 2 --json headSha --jq '.[1].headSha')
 
-          if [[ "${GITHUB_SHA}" == "${last_nightly}" ]]; then
-            echo "passed=false" >> $GITHUB_OUTPUT
-          else
-            echo "passed=true" >> $GITHUB_OUTPUT
-            echo "lastNightly=${last_nightly}" >> $GITHUB_OUTPUT
-          fi
+        if [[ "${GITHUB_SHA}" == "${last_nightly}" ]]; then
+          echo "passed=false" >> $GITHUB_OUTPUT
+        else
+          echo "passed=true" >> $GITHUB_OUTPUT
+          echo "lastNightly=${last_nightly}" >> $GITHUB_OUTPUT
+        fi
 
-      - name: Check for Changed Files ✅
-        if: fromJSON(steps.nightly-checks.outputs.passed)
-        uses: ./.github/actions/check-changes
-        id: checks
-        with:
-          baseRef: ${{ steps.nightly-checks.outputs.lastNightly }}
-          checkGlob: '**/en-US.ini'
+    - name: Check for Changed Files ✅
+      if: fromJSON(steps.nightly-checks.outputs.passed)
+      uses: ./.github/actions/check-changes
+      id: checks
+      with:
+        baseRef: ${{ steps.nightly-checks.outputs.lastNightly }}
+        checkGlob: '**/en-US.ini'
 
-      - name: Upload US English Language Files 🇺🇸
-        if: steps.checks.outcome == 'success' && fromJSON(steps.checks.outputs.hasChangedFiles)
-        uses: obsproject/obs-crowdin-sync/upload@4b488c7ced03aa109d9f12529bd91c26c54b3e89
-        env:
-          CROWDIN_PAT: ${{ secrets.CROWDIN_SYNC_CROWDIN_PAT }}
-          GITHUB_EVENT_BEFORE: ${{ steps.nightly-checks.outputs.lastNightly }}
+    - name: Upload US English Language Files 🇺🇸
+      if: steps.checks.outcome == 'success' && 
+        fromJSON(steps.checks.outputs.hasChangedFiles)
+      uses: 
+        obsproject/obs-crowdin-sync/upload@4b488c7ced03aa109d9f12529bd91c26c54b3e89
+      env:
+        CROWDIN_PAT: ${{ secrets.CROWDIN_SYNC_CROWDIN_PAT }}
+        GITHUB_EVENT_BEFORE: ${{ steps.nightly-checks.outputs.lastNightly }}
 
+    needs:
+    - alpha_bridge_inputs
   steam-upload:
     name: Upload Steam Builds 🚂
-    needs: [build-project]
-    if: github.repository_owner == 'obsproject'
+    needs:
+    - build-project
+    - alpha_bridge_inputs
+    if: ${{ (github.repository_owner == 'obsproject') && 
+      needs.alpha_bridge_inputs.outputs.changed == 'true' }}
     runs-on: macos-26
     defaults:
       run:
         shell: zsh --no-rcs --errexit --pipefail {0}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd   # v6.0.2
 
-      - name: Check Nightly Runs ☑️
-        id: checks
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          : Check Nightly Runs ☑️
-          if (( ${+RUNNER_DEBUG} )) setopt XTRACE
+    - name: Check Nightly Runs ☑️
+      id: checks
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        : Check Nightly Runs ☑️
+        if (( ${+RUNNER_DEBUG} )) setopt XTRACE
 
-          # This 'gh' command retrieves the last 2 runs of the workflow defined
-          # by 'scheduled.yaml' and retrieves just the 'headSha' value of the
-          # JSON response payload.
-          #
-          # As this job runs in context of the same workflow, the first element
-          # of the workflow list will be the currently active run.
-          #
-          # The jq expression then selects the 'headSha' element of the second
-          # element in the array, which is the SHA-1 hash of the commit used
-          # for the immediately prior run of this workflow.
+        # This 'gh' command retrieves the last 2 runs of the workflow defined
+        # by 'scheduled.yaml' and retrieves just the 'headSha' value of the
+        # JSON response payload.
+        #
+        # As this job runs in context of the same workflow, the first element
+        # of the workflow list will be the currently active run.
+        #
+        # The jq expression then selects the 'headSha' element of the second
+        # element in the array, which is the SHA-1 hash of the commit used
+        # for the immediately prior run of this workflow.
 
-          local last_nightly=$(gh run list --workflow scheduled.yaml --limit 2 --json headSha --jq '.[1].headSha')
+        local last_nightly=$(gh run list --workflow scheduled.yaml --limit 2 --json headSha --jq '.[1].headSha')
 
-          if [[ "${GITHUB_SHA}" == "${last_nightly}" ]] {
-            print "passed=false" >> $GITHUB_OUTPUT
-          } else {
-            print "passed=true" >> $GITHUB_OUTPUT
-          }
+        if [[ "${GITHUB_SHA}" == "${last_nightly}" ]] {
+          print "passed=false" >> $GITHUB_OUTPUT
+        } else {
+          print "passed=true" >> $GITHUB_OUTPUT
+        }
 
-      - uses: ./.github/actions/steam-upload
-        if: fromJSON(steps.checks.outputs.passed)
-        with:
-          steamSecret: ${{ secrets.STEAM_SHARED_SECRET }}
-          steamUser: ${{ secrets.STEAM_USER }}
-          steamPassword: ${{ secrets.STEAM_PASSWORD }}
-          workflowSecret: ${{ secrets.GITHUB_TOKEN }}
-          preview: ${{ github.repository_owner != 'obsproject' }}
+    - uses: ./.github/actions/steam-upload
+      if: fromJSON(steps.checks.outputs.passed)
+      with:
+        steamSecret: ${{ secrets.STEAM_SHARED_SECRET }}
+        steamUser: ${{ secrets.STEAM_USER }}
+        steamPassword: ${{ secrets.STEAM_PASSWORD }}
+        workflowSecret: ${{ secrets.GITHUB_TOKEN }}
+        preview: ${{ github.repository_owner != 'obsproject' }}
+  alpha_bridge_inputs:
+    name: AlphaBridge input check
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    concurrency:
+      group: alpha-bridge-inputs-${{ github.workflow }}-${{ github.sha }}-${{ 
+        github.event.schedule || github.event_name }}
+      cancel-in-progress: false
+    outputs:
+      changed: ${{ steps.identity.outputs.changed }}
+    steps:
+    - id: identity
+      name: Check source, workflow, variables, and runner inputs
+      env:
+        GH_TOKEN: ${{ github.token }}
+        AB_REPOSITORY: ${{ github.repository }}
+        AB_RUN_ID: ${{ github.run_id }}
+        AB_HEAD_SHA: ${{ github.sha }}
+        AB_EVENT: ${{ github.event_name }}
+        AB_SCHEDULE: ${{ github.event.schedule || '' }}
+        AB_VARIABLES: ${{ toJSON(vars) }}
+        AB_INPUTS: ${{ toJSON(inputs) }}
+      shell: bash
+      run: "python3 - <<'ALPHA_BRIDGE_CI_PY'\n\"\"\"Native scheduled-CI input check,
+        embedded in the owned fork configuration.\"\"\"\n\nfrom __future__ import
+        annotations\n\nimport hashlib\nimport json\nimport os\nimport urllib.parse\n\
+        import urllib.request\n\n\ndef changed(get, *, repository, run_id, identity,
+        job_name):\n    current = get(f\"/repos/{repository}/actions/runs/{run_id}\"\
+        )\n    event = current[\"event\"]\n    query = urllib.parse.urlencode(\n \
+        \       {\n            \"head_sha\": current[\"head_sha\"],\n            \"\
+        event\": event,\n            \"per_page\": 100,\n        }\n    )\n    runs
+        = get(f\"/repos/{repository}/actions/workflows/{current['workflow_id']}/runs?{query}\"\
+        )\n    for run in runs[\"workflow_runs\"]:\n        if run[\"id\"] == run_id:\n\
+        \            continue\n        if run.get(\"head_sha\") != current[\"head_sha\"\
+        ] or run.get(\"event\") != event:\n            raise ValueError(\"provider
+        returned a different CI input identity\")\n        page = 1\n        while
+        True:\n            jobs = get(\n                f\"/repos/{repository}/actions/runs/{run['id']}/jobs?per_page=100&page={page}\"\
+        \n            )[\"jobs\"]\n            for job in jobs:\n                if
+        (\n                    job[\"name\"] == job_name\n                    and
+        job.get(\"status\") == \"completed\"\n                    and job.get(\"conclusion\"\
+        ) == \"success\"\n                    and any(\n                        step[\"\
+        name\"] == f\"AlphaBridge input identity {identity}\"\n                  \
+        \      and step.get(\"conclusion\") == \"success\"\n                     \
+        \   for step in job.get(\"steps\", [])\n                    )\n          \
+        \      ):\n                    return False\n            if len(jobs) < 100:\n\
+        \                break\n            page += 1\n    return True\n\n\ndef main():\n\
+        \    inputs = {\n        \"configuration_commit\": os.environ[\"AB_HEAD_SHA\"\
+        ],\n        \"event\": os.environ[\"AB_EVENT\"],\n        \"schedule\": os.environ[\"\
+        AB_SCHEDULE\"],\n        \"variables\": json.loads(os.environ[\"AB_VARIABLES\"\
+        ]),\n        \"inputs\": json.loads(os.environ[\"AB_INPUTS\"]),\n        \"\
+        runner_image\": [os.environ.get(\"ImageOS\", \"\"), os.environ.get(\"ImageVersion\"\
+        , \"\")],\n    }\n    identity = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()\n\
+        \n    def get(path):\n        request = urllib.request.Request(\n        \
+        \    \"https://api.github.com\" + path,\n            headers={\n         \
+        \       \"Authorization\": \"Bearer \" + os.environ[\"GH_TOKEN\"],\n     \
+        \           \"Accept\": \"application/vnd.github+json\",\n               \
+        \ \"X-GitHub-Api-Version\": \"2026-03-10\",\n            },\n        )\n \
+        \       with urllib.request.urlopen(request, timeout=60) as response:\n  \
+        \          return json.load(response)\n\n    should_run = inputs[\"event\"\
+        ] != \"schedule\" or changed(\n        get,\n        repository=os.environ[\"\
+        AB_REPOSITORY\"],\n        run_id=int(os.environ[\"AB_RUN_ID\"]),\n      \
+        \  identity=identity,\n        job_name=\"AlphaBridge input check\",\n   \
+        \ )\n    with open(os.environ[\"GITHUB_OUTPUT\"], \"a\", encoding=\"utf-8\"\
+        ) as output:\n        output.write(f\"digest={identity}\\nchanged={str(should_run).lower()}\\\
+        n\")\n    print(\"CI inputs changed\" if should_run else \"CI inputs unchanged;
+        build and test jobs skipped\")\n\n\nif __name__ == \"__main__\":\n    main()\n\
+        \nALPHA_BRIDGE_CI_PY\n"
+    - name: AlphaBridge input identity ${{ steps.identity.outputs.digest }}
+      run: echo 'Input identity recorded'
