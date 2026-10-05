@@ -93,10 +93,10 @@ static inline void mix_audio(struct audio_output_data *mixes, obs_source_t *sour
 	size_t total_floats = AUDIO_OUTPUT_FRAMES;
 	size_t start_point = 0;
 
-	if (source->audio_ts < ts->start || ts->end <= source->audio_ts)
+	if (source->audio_ts < (ts->start - 1) || ts->end <= source->audio_ts)
 		return;
 
-	if (source->audio_ts != ts->start) {
+	if (source->audio_ts != ts->start && source->audio_ts != (ts->start - 1)) {
 		start_point = convert_time_to_frames(sample_rate, source->audio_ts - ts->start);
 		if (start_point == AUDIO_OUTPUT_FRAMES)
 			return;
@@ -376,12 +376,22 @@ static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate
 	if (audio_buffering_maxed(audio))
 		return;
 
+	offset = ts->start - min_ts;
+	if (offset <= 1)
+		return;
+
+	offset -= 1;
+	frames = ns_to_audio_frames(sample_rate, offset);
+	if (audio_frames_to_ns(sample_rate, frames) < offset)
+		frames++;
+	uint64_t required_ticks = frames / AUDIO_OUTPUT_FRAMES;
+	if (frames % AUDIO_OUTPUT_FRAMES)
+		required_ticks++;
+	const int remaining_ticks = audio->max_buffering_ticks - audio->total_buffering_ticks;
+	ticks = required_ticks > (uint64_t)remaining_ticks ? remaining_ticks : (int)required_ticks;
+
 	if (!audio->buffering_wait_ticks)
 		audio->buffered_ts = ts->start;
-
-	offset = ts->start - min_ts;
-	frames = ns_to_audio_frames(sample_rate, offset);
-	ticks = (int)((frames + AUDIO_OUTPUT_FRAMES - 1) / AUDIO_OUTPUT_FRAMES);
 
 	audio->total_buffering_ticks += ticks;
 
