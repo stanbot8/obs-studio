@@ -23,6 +23,8 @@
 #include "obs.h"
 #include "obs-internal.h"
 
+#include <util/util_uint64.h>
+
 struct obs_core *obs = NULL;
 
 static THREAD_LOCAL bool is_ui_thread = false;
@@ -1613,9 +1615,8 @@ bool obs_reset_audio2(const struct obs_audio_info2 *oai)
 		return true;
 
 	if (oai->max_buffering_ms) {
-		uint32_t max_frames = oai->max_buffering_ms * oai->samples_per_sec / SEC_TO_MSEC;
-		max_frames += (AUDIO_OUTPUT_FRAMES - 1);
-		audio->max_buffering_ticks = max_frames / AUDIO_OUTPUT_FRAMES;
+		const uint32_t max_frames = oai->max_buffering_ms * oai->samples_per_sec / SEC_TO_MSEC;
+		audio->max_buffering_ticks = (uint32_t)util_div_round_up64(max_frames, AUDIO_OUTPUT_FRAMES);
 	} else {
 		audio->max_buffering_ticks = 45;
 	}

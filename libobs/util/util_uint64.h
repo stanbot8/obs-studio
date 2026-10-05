@@ -20,6 +20,8 @@
 #include <intrin.h>
 #endif
 
+#include <stdint.h>
+
 static inline uint64_t util_mul_div64(uint64_t num, uint64_t mul, uint64_t div)
 {
 #if defined(_MSC_VER) && defined(_M_X64) && (_MSC_VER >= 1920)
@@ -31,4 +33,9 @@ static inline uint64_t util_mul_div64(uint64_t num, uint64_t mul, uint64_t div)
 	const uint64_t rem = num % div;
 	return (num / div) * mul + (rem * mul) / div;
 #endif
+}
+
+static inline uint64_t util_div_round_up64(uint64_t num, uint64_t div)
+{
+	return num / div + (num % div != 0);
 }

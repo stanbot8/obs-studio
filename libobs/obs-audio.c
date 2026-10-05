@@ -384,9 +384,7 @@ static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate
 	frames = ns_to_audio_frames(sample_rate, offset);
 	if (audio_frames_to_ns(sample_rate, frames) < offset)
 		frames++;
-	uint64_t required_ticks = frames / AUDIO_OUTPUT_FRAMES;
-	if (frames % AUDIO_OUTPUT_FRAMES)
-		required_ticks++;
+	const uint64_t required_ticks = util_div_round_up64(frames, AUDIO_OUTPUT_FRAMES);
 	const int remaining_ticks = audio->max_buffering_ticks - audio->total_buffering_ticks;
 	ticks = required_ticks > (uint64_t)remaining_ticks ? remaining_ticks : (int)required_ticks;
 
