@@ -93,10 +93,10 @@ static inline void mix_audio(struct audio_output_data *mixes, obs_source_t *sour
 	size_t total_floats = AUDIO_OUTPUT_FRAMES;
 	size_t start_point = 0;
 
-	if (source->audio_ts < ts->start || ts->end <= source->audio_ts)
+	if (source->audio_ts < (ts->start - 1) || ts->end <= source->audio_ts)
 		return;
 
-	if (source->audio_ts != ts->start) {
+	if (source->audio_ts != ts->start && source->audio_ts != (ts->start - 1)) {
 		start_point = convert_time_to_frames(sample_rate, source->audio_ts - ts->start);
 		if (start_point == AUDIO_OUTPUT_FRAMES)
 			return;
@@ -317,27 +317,9 @@ static inline bool audio_buffering_maxed(struct obs_core_audio *audio)
 	return audio->total_buffering_ticks == audio->max_buffering_ticks;
 }
 
-static void set_fixed_audio_buffering(struct obs_core_audio *audio, size_t sample_rate, struct ts_info *ts)
+static void push_buffered_timestamps(struct obs_core_audio *audio, size_t sample_rate, struct ts_info *ts, int ticks)
 {
-	struct ts_info new_ts;
-	size_t total_ms;
-	int ticks;
-
-	if (audio_buffering_maxed(audio))
-		return;
-
-	if (!audio->buffering_wait_ticks)
-		audio->buffered_ts = ts->start;
-
-	ticks = audio->max_buffering_ticks - audio->total_buffering_ticks;
-	audio->total_buffering_ticks += ticks;
-
-	total_ms = audio->total_buffering_ticks * AUDIO_OUTPUT_FRAMES * 1000 / sample_rate;
-
-	blog(LOG_INFO,
-	     "Enabling fixed audio buffering, total "
-	     "audio buffering is now %d milliseconds",
-	     (int)total_ms);
+	struct ts_info new_ts = {0};
 
 	new_ts.start =
 		audio->buffered_ts - audio_frames_to_ns(sample_rate, audio->buffering_wait_ticks * AUDIO_OUTPUT_FRAMES);
@@ -358,10 +340,33 @@ static void set_fixed_audio_buffering(struct obs_core_audio *audio, size_t sampl
 	*ts = new_ts;
 }
 
+static void set_fixed_audio_buffering(struct obs_core_audio *audio, size_t sample_rate, struct ts_info *ts)
+{
+	size_t total_ms;
+	int ticks;
+
+	if (audio_buffering_maxed(audio))
+		return;
+
+	if (!audio->buffering_wait_ticks)
+		audio->buffered_ts = ts->start;
+
+	ticks = audio->max_buffering_ticks - audio->total_buffering_ticks;
+	audio->total_buffering_ticks += ticks;
+
+	total_ms = audio->total_buffering_ticks * AUDIO_OUTPUT_FRAMES * 1000 / sample_rate;
+
+	blog(LOG_INFO,
+	     "Enabling fixed audio buffering, total "
+	     "audio buffering is now %d milliseconds",
+	     (int)total_ms);
+
+	push_buffered_timestamps(audio, sample_rate, ts, ticks);
+}
+
 static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate, struct ts_info *ts, uint64_t min_ts,
 				const char *buffering_name)
 {
-	struct ts_info new_ts;
 	uint64_t offset;
 	uint64_t frames;
 	size_t total_ms;
@@ -371,12 +376,20 @@ static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate
 	if (audio_buffering_maxed(audio))
 		return;
 
+	offset = ts->start - min_ts;
+	if (offset <= 1)
+		return;
+
+	offset -= 1;
+	frames = ns_to_audio_frames(sample_rate, offset);
+	if (audio_frames_to_ns(sample_rate, frames) < offset)
+		frames++;
+	const uint64_t required_ticks = util_div_round_up64(frames, AUDIO_OUTPUT_FRAMES);
+	const int remaining_ticks = audio->max_buffering_ticks - audio->total_buffering_ticks;
+	ticks = required_ticks > (uint64_t)remaining_ticks ? remaining_ticks : (int)required_ticks;
+
 	if (!audio->buffering_wait_ticks)
 		audio->buffered_ts = ts->start;
-
-	offset = ts->start - min_ts;
-	frames = ns_to_audio_frames(sample_rate, offset);
-	ticks = (int)((frames + AUDIO_OUTPUT_FRAMES - 1) / AUDIO_OUTPUT_FRAMES);
 
 	audio->total_buffering_ticks += ticks;
 
@@ -402,23 +415,7 @@ static void add_audio_buffering(struct obs_core_audio *audio, size_t sample_rate
 	blog(LOG_DEBUG, "old buffered ts: %" PRIu64 "-%" PRIu64, ts->start, ts->end);
 #endif
 
-	new_ts.start =
-		audio->buffered_ts - audio_frames_to_ns(sample_rate, audio->buffering_wait_ticks * AUDIO_OUTPUT_FRAMES);
-
-	while (ticks--) {
-		const uint64_t cur_ticks = ++audio->buffering_wait_ticks;
-
-		new_ts.end = new_ts.start;
-		new_ts.start = audio->buffered_ts - audio_frames_to_ns(sample_rate, cur_ticks * AUDIO_OUTPUT_FRAMES);
-
-#if DEBUG_AUDIO == 1
-		blog(LOG_DEBUG, "add buffered ts: %" PRIu64 "-%" PRIu64, new_ts.start, new_ts.end);
-#endif
-
-		deque_push_front(&audio->buffered_timestamps, &new_ts, sizeof(new_ts));
-	}
-
-	*ts = new_ts;
+	push_buffered_timestamps(audio, sample_rate, ts, ticks);
 }
 
 static bool audio_buffer_insufficient(struct obs_source *source, size_t sample_rate, uint64_t min_ts)
